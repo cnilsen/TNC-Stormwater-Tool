@@ -1,0 +1,143 @@
+//Performs tasseled cap transformation on Sentinel-2 image and then performs clustering in WekaKmeans
+
+/**
+ * Function to mask clouds using the Sentinel-2 QA band
+ * @param {ee.Image} image Sentinel-2 image
+ * @return {ee.Image} cloud masked Sentinel-2 image
+ */
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  return image.updateMask(mask).divide(10000);
+}
+
+// Map the function over one year of data and take the median.
+// Load Sentinel-2 TOA reflectance data.
+var dataset = ee.ImageCollection('COPERNICUS/S2')
+                  .filterDate('2018-01-01', '2018-06-30')
+                  // Pre-filter to get less cloudy granules.
+                  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+                  .map(maskS2clouds);
+
+
+// Compute a median image and display.
+//var median = dataset.select(vegBands).median();
+var median = dataset.median();
+
+
+//Map.setCenter(-122.3578, 37.7726, 12);
+//Map.addLayer(median, {}, 'median');
+
+//Map.setCenter(-9.1695, 38.6917, 12);
+//Map.addLayer(dataset.median(), rgbVis, 'RGB');
+
+//
+/*
+      tasseledcap_s2:
+      Function to create a Tasselled Cap on a Sentinel 2 image.
+   
+    */ 
+var image = median; 
+    
+      var Brightness = image.expression(
+        '(BLUE * 0.3037) + (GREEN * 0.2793) + (RED * 0.4743) + (NIR * 0.5585) + (SWIR1 * 0.5082) + (SWIR2 * 0.1863)', {
+          'SWIR2': image.select('B12'),
+          'SWIR1': image.select('B11'),
+          'NIR': image.select('B8'),
+          'RED': image.select('B4'),
+          'GREEN': image.select('B3'),
+          'BLUE': image.select('B2')
+      }).rename('Brightness');
+      
+      var Greenness = image.expression(
+        '(BLUE * -0.2848) + (GREEN * -0.243) + (RED * -0.5436) + (NIR * 0.7243) + (SWIR1 * -0.0840) + (SWIR2 * -0.1800)', {
+          'SWIR2': image.select('B12'),
+          'SWIR1': image.select('B11'),
+          'NIR': image.select('B8'),
+          'RED': image.select('B4'),
+          'GREEN': image.select('B3'),
+          'BLUE': image.select('B2')
+      }).rename('Greenness');
+      
+      var Wetness = image.expression(
+        '(BLUE * 0.1509) + (GREEN * 0.1973) + (RED * 0.3279) + (NIR * 0.3406) + (SWIR1 * -0.7112) + (SWIR2 * -0.4572)', {
+          'SWIR2': image.select('B12'),
+          'SWIR1': image.select('B11'),
+          'NIR': image.select('B8'),
+          'RED': image.select('B4'),
+          'GREEN': image.select('B3'),
+          'BLUE': image.select('B2')
+      }).rename('Wetness');
+  //Tasseled Cap...  
+    
+    
+    var nonsuch = image.expression(
+        '(-0.016 * B03 + 0.131 * B04 - 0.425 * B06 + 0.882 * B09)', {
+          'B03': image.select('B3'),
+          'B04': image.select('B4'),
+          'B06': image.select('B6'),
+          'B09': image.select('B9')
+      }).rename('nonsuch');
+    
+   // Map.addLayer(Wetness,{},'wetness'); 
+    //Map.addLayer(nonsuch,{},'nonsuch');
+//    Map.addLayer(Greenness.mask(Greenness.gt(0.05)),{},'greeness');
+//    Map.addLayer(Brightness.mask(Brightness.gt(0.08)),{},'brightness');
+
+var TC = ee.Image.cat([Brightness, Greenness, Wetness]); //.cat() 
+//Map.addLayer(TC,{},'');
+
+var input = TC;
+var region = geometry2; 
+// Make the training dataset.
+var training = input.sample({
+  region: region,
+  scale: 30,
+  numPixels: 500
+});
+
+// Instantiate the clusterer and train it.
+var clusterer = ee.Clusterer.wekaKMeans(12).train(training);
+
+// Cluster the input using the trained clusterer.
+var result = input.cluster(clusterer);
+
+// Display the clusters with random colors.
+//Map.addLayer(result.randomVisualizer(), {}, 'clusters');
+
+//Map.addLayer(input,{},'NAIP');
+
+// From Example https://developers.google.com/earth-engine/image_visualization
+//var cover = ee.Image('MODIS/051/MCD12Q1/2012_01_01').select('Land_Cover_Type_1');
+
+var sld =
+'<RasterSymbolizer>' +
+  '<ColorMap>' +
+    '<ColorMapEntry color="#1f78b4" quantity="0" label="Open Water"/>' +
+    '<ColorMapEntry color="#BFC0C0" quantity="1" label="Ice/Snow" />' +
+    '<ColorMapEntry color="#BFC0C0" quantity="2" label="Developed Open Space" />' +
+    '<ColorMapEntry color="#BFC0C0" quantity="3" label="Grass" />' +
+    '<ColorMapEntry color="#BFC0C0" quantity="4" label="Developed, Medium Intensity" />' +
+    '<ColorMapEntry color="#BFC0C0" quantity="5" label="Developed High Intensity" />' +
+    '<ColorMapEntry color="#BFC0C0" quantity="6" label="Barren" />' +
+    '<ColorMapEntry color="#BFC0C0" quantity="7" label="Deciduous Forest" />' +
+    '<ColorMapEntry color="#FF4A1C" quantity="8" label="Roof" />' +
+    '<ColorMapEntry color="#e31a1c" quantity="9" label="Road" />' +
+    //--
+    '<ColorMapEntry color="#BFC0C0" quantity="10" label="Dwarf Scrub"/>' +
+    '<ColorMapEntry color="#BA3615" quantity="11" label="Parking" />' +
+  '</ColorMap>' +
+'</RasterSymbolizer>';
+
+
+Map.addLayer(result.randomVisualizer(),{},'CLASSIFIED_V1');
+Map.addLayer(result.sldStyle(sld),{},'CLASSIFIED');
+
